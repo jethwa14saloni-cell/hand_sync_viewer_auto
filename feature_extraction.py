@@ -58,6 +58,14 @@ class FeatureExtractor:
     def compute_tap_features(self, signal, validated_peaks, time_array,
                              hand_name, tap_start_frame, tap_end_frame):
         velocity, acceleration = self.compute_velocity_acceleration(signal, time_array)
+        finite = np.isfinite(signal)
+        run_id = np.cumsum(np.r_[True, finite[1:] != finite[:-1]])
+        run_start = {}
+        run_end = {}
+        for idx, rid in enumerate(run_id):
+            run_start.setdefault(rid, idx)
+            run_end[rid] = idx
+        segment_ids = [int(run_id[int(pk)]) for pk in validated_peaks]
 
         amplitudes            = []
         peak_values_list      = []
@@ -76,6 +84,9 @@ class FeatureExtractor:
             left_start = int(validated_peaks[i - 1]) if i > 0 else tap_start_frame
             right_end  = int(validated_peaks[i + 1]) if i < len(validated_peaks) - 1 \
                          else tap_end_frame
+            rid        = run_id[peak_idx]
+            left_start = max(left_start, run_start[rid])
+            right_end  = min(right_end, run_end[rid])
 
             left_valley_idx  = left_start + int(np.argmin(signal[left_start : peak_idx + 1]))
             right_valley_idx = peak_idx   + int(np.argmin(signal[peak_idx   : right_end + 1]))
@@ -130,6 +141,7 @@ class FeatureExtractor:
             "left_valley_idxs"     : left_valley_idxs,
             "right_valley_idxs"    : right_valley_idxs,
             "validated_peaks"      : list(validated_peaks),
+            "segment_ids"          : segment_ids,
         }
 
     def build_tap_indices(self, validated_peaks, left_valley_idxs, right_valley_idxs):
@@ -159,9 +171,20 @@ class FeatureExtractor:
             "decay_percent"        : float(decay / early_mean * 100),
         }
 
+    @staticmethod
+    def _cycle_durations(tap_features):
+        tap_times = np.array(tap_features["tap_times"])
+        durations = np.diff(tap_times)
+        seg = tap_features.get("segment_ids")
+        if seg is not None:
+            seg = np.asarray(seg)
+            durations = durations[seg[1:] == seg[:-1]]
+        return durations
+
     def compute_cycle_duration(self, tap_features):
-        tap_times        = np.array(tap_features["tap_times"])
-        cycle_durations  = np.diff(tap_times)
+        cycle_durations  = self._cycle_durations(tap_features)
+        if len(cycle_durations) < 2:
+            raise ValueError("fewer than 2 cycle durations inside tracked stretches")
         cycle_numbers    = np.arange(1, len(cycle_durations) + 1)
         slope, intercept = np.polyfit(cycle_numbers, cycle_durations, 1)
         return {
@@ -187,9 +210,8 @@ class FeatureExtractor:
     def compute_hypokinesia_bradykinesia(self, tap_features):
         peak_values   = np.array(tap_features["peak_values"])
         trough_values = np.array(tap_features["trough_values"])
-        tap_times     = np.array(tap_features["tap_times"])
         amp_i         = peak_values - trough_values
-        cd_i          = np.diff(tap_times)
+        cd_i          = self._cycle_durations(tap_features)
         return {
             "M"           : len(peak_values),
             "amp_i"       : amp_i.tolist(),
@@ -197,7 +219,7 @@ class FeatureExtractor:
             "amp_avg"     : float(np.mean(amp_i)),
             "amp_avg_pct" : float(np.mean(amp_i) * 100),
             "cd_i"        : cd_i.tolist(),
-            "cd_avg"      : float(np.sum(cd_i) / (len(peak_values) - 1)),
+            "cd_avg"      : float(np.mean(cd_i)) if len(cd_i) else float("nan"),
         }
 
     def compute_acceleration_features(self, tap_features):
@@ -399,5 +421,3 @@ def extract_hand_features(extractor, results, fe, hand_name, fs=30, y_max=None):
         "speed_signal"       : speed,
         "summary_table"      : summary_table,
     }
-
-

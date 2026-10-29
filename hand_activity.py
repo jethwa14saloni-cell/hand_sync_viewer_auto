@@ -7,17 +7,22 @@ STEP = 0.25
 WINDOW = 2.0
 MIN_AMPLITUDE = 0.10  # thumb/index distance divided by palm reference
 MIN_SPEED = 0.10
+MAX_BRIDGE = 0.5
 
 
 def activity_score(time, signal, center):
     time, signal = np.asarray(time), np.asarray(signal)
     mask = (time >= center-WINDOW/2) & (time <= center+WINDOW/2)
     t, y = time[mask], signal[mask]
-    if len(y) < 10 or t[-1]-t[0] < 0.8 or np.mean(np.isfinite(y)) < .9:
+    if len(y) < 10 or t[-1]-t[0] < 0.8 or np.mean(np.isfinite(y)) < .75:
         return 0.0
-    # Do not bridge long tracking gaps.
-    if not np.all(np.isfinite(y)):
-        return 0.0
+    finite = np.isfinite(y)
+    if not np.all(finite):
+        runs = np.diff(np.r_[False, ~finite, False].astype(int))
+        longest = int(np.max(np.flatnonzero(runs == -1) - np.flatnonzero(runs == 1)))
+        if longest * float(np.median(np.diff(t))) > MAX_BRIDGE:
+            return 0.0
+        y = np.interp(t, t[finite], y[finite])
     dt = float(np.median(np.diff(t)))
     if dt <= 0:
         return 0.0
